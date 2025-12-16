@@ -340,7 +340,7 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
             </CardHeader>
             <CardContent>
                 <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
-                    <TabsList>
+                    <TabsList className="grid w-full grid-cols-2 gap-2 h-auto sm:grid-cols-4 p-1">
                         <TabsTrigger value="all">All</TabsTrigger>
                         <TabsTrigger value="question">Questions</TabsTrigger>
                         <TabsTrigger value="feedback">Feedback</TabsTrigger>
