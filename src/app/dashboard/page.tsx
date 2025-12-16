@@ -310,41 +310,58 @@ function DashboardContent() {
                     </Link>
                     <h1 className="text-2xl md:text-3xl font-bold">Dashboard</h1>
                 </div>
-                {/* Profile - Always on the right */}
-                {session?.user && (
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" className="relative h-10 w-10 md:h-12 md:w-12 rounded-full p-0 hover:bg-transparent">
-                                <div className="relative h-9 w-9 md:h-11 md:w-11 rounded-full p-[2px] bg-gradient-to-br from-red-500 via-yellow-500 via-green-500 to-blue-500">
-                                    <Avatar className="h-full w-full border-2 border-background">
-                                        <AvatarImage
-                                            src={session.user.image || `https://api.dicebear.com/7.x/avataaars/svg?seed=${session.user.email}`}
-                                            alt={session.user.name || "User"}
-                                        />
-                                        <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-600 text-white font-semibold">
-                                            {session.user.name?.charAt(0).toUpperCase() || session.user.email?.charAt(0).toUpperCase() || 'U'}
-                                        </AvatarFallback>
-                                    </Avatar>
-                                </div>
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent className="w-56" align="end" forceMount>
-                            <DropdownMenuLabel className="font-normal">
-                                <div className="flex flex-col space-y-1">
-                                    <p className="text-sm font-medium leading-none">{session.user.name || 'User'}</p>
-                                    <p className="text-xs leading-none text-muted-foreground">
-                                        {session.user.email}
-                                    </p>
-                                </div>
-                            </DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem onClick={() => signOut({ callbackUrl: '/' })} className="cursor-pointer">
-                                <LogOut className="mr-2 h-4 w-4" />
-                                <span>Log out</span>
-                            </DropdownMenuItem>
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-                )}
+                <div className="flex items-center space-x-4">
+                    {/* Desktop Export Button */}
+                    <Button
+                        onClick={handleExport}
+                        disabled={exporting}
+                        className="hidden md:flex items-center gap-2"
+                        variant="outline"
+                    >
+                        {exporting ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                            <Download className="h-4 w-4" />
+                        )}
+                        Export Excel
+                    </Button>
+
+                    {/* Profile - Always on the right */}
+                    {session?.user && (
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" className="relative h-10 w-10 md:h-12 md:w-12 rounded-full p-0 hover:bg-transparent">
+                                    <div className="relative h-9 w-9 md:h-11 md:w-11 rounded-full p-[2px] bg-gradient-to-br from-red-500 via-yellow-500 via-green-500 to-blue-500">
+                                        <Avatar className="h-full w-full border-2 border-background">
+                                            <AvatarImage
+                                                src={session.user.image || `https://api.dicebear.com/7.x/avataaars/svg?seed=${session.user.email}`}
+                                                alt={session.user.name || "User"}
+                                            />
+                                            <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-600 text-white font-semibold">
+                                                {session.user.name?.charAt(0).toUpperCase() || session.user.email?.charAt(0).toUpperCase() || 'U'}
+                                            </AvatarFallback>
+                                        </Avatar>
+                                    </div>
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent className="w-56" align="end" forceMount>
+                                <DropdownMenuLabel className="font-normal">
+                                    <div className="flex flex-col space-y-1">
+                                        <p className="text-sm font-medium leading-none">{session.user.name || 'User'}</p>
+                                        <p className="text-xs leading-none text-muted-foreground">
+                                            {session.user.email}
+                                        </p>
+                                    </div>
+                                </DropdownMenuLabel>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem onClick={() => signOut({ callbackUrl: '/' })} className="cursor-pointer">
+                                    <LogOut className="mr-2 h-4 w-4" />
+                                    <span>Log out</span>
+                                </DropdownMenuItem>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    )}
+                </div>
             </div>
 
             {/* Mobile Floating Action Button for Export - Only visible on mobile */}
