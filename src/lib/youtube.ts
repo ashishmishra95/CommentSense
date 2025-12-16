@@ -137,9 +137,13 @@ export async function fetchCommentsWithProgress(
     } while (nextPageToken);
 
     return totalLimit > 0 ? allComments.slice(0, totalLimit) : allComments;
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching YouTube comments:', error);
-    throw new Error('Failed to fetch comments from YouTube');
+    if (axios.isAxiosError(error)) {
+      const apiMessage = error.response?.data?.error?.message || error.message;
+      throw new Error(`YouTube API Error: ${apiMessage}`);
+    }
+    throw error;
   }
 }
 
