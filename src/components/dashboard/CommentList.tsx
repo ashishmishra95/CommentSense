@@ -72,13 +72,13 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
 
     const CommentItem = ({ comment }: { comment: Comment }) => (
         <div className="p-4 border-b last:border-0 hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors">
-            <div className="flex justify-between items-start mb-2">
-                <div className="font-semibold text-sm">{comment.authorDisplayName}</div>
-                <Badge variant="secondary" className={getCategoryColor(comment.category)}>
+            <div className="flex justify-between items-start mb-2 gap-2">
+                <div className="font-semibold text-sm break-words min-w-0">{comment.authorDisplayName}</div>
+                <Badge variant="secondary" className={`shrink-0 ${getCategoryColor(comment.category)}`}>
                     {comment.category}
                 </Badge>
             </div>
-            <p className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-wrap">{comment.textDisplay}</p>
+            <p className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-wrap break-words">{comment.textDisplay}</p>
             <div className="mt-2 flex items-center gap-4 text-xs text-slate-400">
                 <span>{new Date(comment.publishedAt).toLocaleString(undefined, {
                     year: 'numeric',
