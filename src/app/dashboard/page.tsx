@@ -315,8 +315,7 @@ function DashboardContent() {
                     <Button
                         onClick={handleExport}
                         disabled={exporting}
-                        className="hidden md:flex items-center gap-2"
-                        variant="outline"
+                        className="hidden md:flex items-center gap-2 bg-black text-white hover:bg-black/90"
                     >
                         {exporting ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
@@ -368,7 +367,7 @@ function DashboardContent() {
             <button
                 onClick={handleExport}
                 disabled={exporting}
-                className="md:hidden fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-primary text-primary-foreground shadow-lg hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center transition-all hover:scale-110 active:scale-95"
+                className="md:hidden fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-black text-white shadow-lg hover:bg-black/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center transition-all hover:scale-110 active:scale-95"
                 aria-label="Export Excel"
             >
                 {exporting ? (
