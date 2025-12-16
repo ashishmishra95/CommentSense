@@ -65,7 +65,7 @@ openssl rand -base64 32
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [https://commentsensee.vercel.app](https://commentsensee.vercel.app) in your browser.
 
 ## 🎯 How It Works
 

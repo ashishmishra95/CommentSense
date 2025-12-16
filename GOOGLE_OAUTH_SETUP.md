@@ -87,7 +87,7 @@ npm run dev
 - Ensure the redirect URI in Google Console matches exactly
 
 ### Redirect URI mismatch
-- Check that `http://localhost:3000/api/auth/callback/google` is added to authorized redirect URIs
+- Check that `https://commentsensee.vercel.app/api/auth/callback/google` is added to authorized redirect URIs
 
 ### Session not persisting
 - Ensure `NEXTAUTH_SECRET` is set and is a strong random string
