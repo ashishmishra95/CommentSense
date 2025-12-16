@@ -71,7 +71,7 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
     };
 
     const CommentItem = ({ comment }: { comment: Comment }) => (
-        <div className="p-4 border-b last:border-0 hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors w-full max-w-full overflow-hidden">
+        <div className="p-4 border-b first:border-t last:border-0 hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors w-full max-w-full overflow-hidden">
             <div className="flex justify-between items-start mb-2 gap-2 w-full">
                 <div className="font-semibold text-sm break-words min-w-0 flex-1">{comment.authorDisplayName}</div>
                 <Badge variant="secondary" className={`shrink-0 ${getCategoryColor(comment.category)}`}>
@@ -350,48 +350,56 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
                     <div className="rounded-md border mt-4">
                         <ScrollArea className="h-[600px] w-full">
                             <TabsContent value="all" className="m-0">
-                                {paginatedComments.length > 0 ? (
-                                    paginatedComments.map(comment => (
-                                        <CommentItem key={comment.id} comment={comment} />
-                                    ))
-                                ) : (
-                                    <div className="p-8 text-center text-muted-foreground">
-                                        No comments found
-                                    </div>
-                                )}
+                                <div className="w-full">
+                                    {paginatedComments.length > 0 ? (
+                                        paginatedComments.map(comment => (
+                                            <CommentItem key={comment.id} comment={comment} />
+                                        ))
+                                    ) : (
+                                        <div className="p-8 text-center text-muted-foreground">
+                                            No comments found
+                                        </div>
+                                    )}
+                                </div>
                             </TabsContent>
                             <TabsContent value="question" className="m-0">
-                                {paginatedComments.length > 0 ? (
-                                    paginatedComments.map(comment => (
-                                        <CommentItem key={comment.id} comment={comment} />
-                                    ))
-                                ) : (
-                                    <div className="p-8 text-center text-muted-foreground">
-                                        No questions found
-                                    </div>
-                                )}
+                                <div className="w-full">
+                                    {paginatedComments.length > 0 ? (
+                                        paginatedComments.map(comment => (
+                                            <CommentItem key={comment.id} comment={comment} />
+                                        ))
+                                    ) : (
+                                        <div className="p-8 text-center text-muted-foreground">
+                                            No questions found
+                                        </div>
+                                    )}
+                                </div>
                             </TabsContent>
                             <TabsContent value="feedback" className="m-0">
-                                {paginatedComments.length > 0 ? (
-                                    paginatedComments.map(comment => (
-                                        <CommentItem key={comment.id} comment={comment} />
-                                    ))
-                                ) : (
-                                    <div className="p-8 text-center text-muted-foreground">
-                                        No feedback found
-                                    </div>
-                                )}
+                                <div className="w-full">
+                                    {paginatedComments.length > 0 ? (
+                                        paginatedComments.map(comment => (
+                                            <CommentItem key={comment.id} comment={comment} />
+                                        ))
+                                    ) : (
+                                        <div className="p-8 text-center text-muted-foreground">
+                                            No feedback found
+                                        </div>
+                                    )}
+                                </div>
                             </TabsContent>
                             <TabsContent value="general" className="m-0">
-                                {paginatedComments.length > 0 ? (
-                                    paginatedComments.map(comment => (
-                                        <CommentItem key={comment.id} comment={comment} />
-                                    ))
-                                ) : (
-                                    <div className="p-8 text-center text-muted-foreground">
-                                        No general comments found
-                                    </div>
-                                )}
+                                <div className="w-full">
+                                    {paginatedComments.length > 0 ? (
+                                        paginatedComments.map(comment => (
+                                            <CommentItem key={comment.id} comment={comment} />
+                                        ))
+                                    ) : (
+                                        <div className="p-8 text-center text-muted-foreground">
+                                            No general comments found
+                                        </div>
+                                    )}
+                                </div>
                             </TabsContent>
                         </ScrollArea>
                         <PaginationControls />
