@@ -246,7 +246,7 @@ export async function GET(request: Request) {
                 console.error('API Error:', error);
                 const errorData = `data: ${JSON.stringify({
                     type: 'error',
-                    error: 'Failed to analyze comments'
+                    error: error instanceof Error ? error.message : 'Failed to analyze comments'
                 })}\n\n`;
                 controller.enqueue(encoder.encode(errorData));
                 controller.close();
