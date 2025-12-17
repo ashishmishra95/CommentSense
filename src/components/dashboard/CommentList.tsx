@@ -71,16 +71,16 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
     };
 
     const CommentItem = ({ comment }: { comment: Comment }) => (
-        <div className="p-4 border-b first:border-t last:border-0 hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors w-full max-w-full overflow-hidden">
-            <div className="flex justify-between items-start mb-2 gap-2 w-full">
-                <div className="font-semibold text-sm break-words min-w-0 flex-1">{comment.authorDisplayName}</div>
+        <div className="p-4 border-b first:border-t last:border-0 hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors w-full min-w-0 overflow-hidden">
+            <div className="flex justify-between items-start mb-2 gap-2 w-full min-w-0">
+                <div className="font-semibold text-sm break-words min-w-0 flex-1 overflow-wrap-anywhere">{comment.authorDisplayName}</div>
                 <Badge variant="secondary" className={`shrink-0 ${getCategoryColor(comment.category)}`}>
                     {comment.category}
                 </Badge>
             </div>
-            <p className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-wrap break-words w-full max-w-full">{comment.textDisplay}</p>
-            <div className="mt-2 flex items-center gap-4 text-xs text-slate-400">
-                <span>{new Date(comment.publishedAt).toLocaleString(undefined, {
+            <p className="text-sm text-slate-600 dark:text-slate-300 whitespace-pre-wrap break-words w-full min-w-0 overflow-wrap-anywhere">{comment.textDisplay}</p>
+            <div className="mt-2 flex items-center gap-4 text-xs text-slate-400 flex-wrap">
+                <span className="break-all">{new Date(comment.publishedAt).toLocaleString(undefined, {
                     year: 'numeric',
                     month: 'numeric',
                     day: 'numeric',
@@ -347,10 +347,10 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
                         <TabsTrigger value="general">General</TabsTrigger>
                     </TabsList>
 
-                    <div className="rounded-md border mt-4">
-                        <ScrollArea className="h-[600px] w-full">
+                    <div className="rounded-md border mt-4 overflow-hidden min-w-0">
+                        <ScrollArea className="h-[600px] w-full overflow-hidden">
                             <TabsContent value="all" className="m-0">
-                                <div className="w-full">
+                                <div className="w-full min-w-0 overflow-hidden">
                                     {paginatedComments.length > 0 ? (
                                         paginatedComments.map(comment => (
                                             <CommentItem key={comment.id} comment={comment} />
@@ -363,7 +363,7 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
                                 </div>
                             </TabsContent>
                             <TabsContent value="question" className="m-0">
-                                <div className="w-full">
+                                <div className="w-full min-w-0 overflow-hidden">
                                     {paginatedComments.length > 0 ? (
                                         paginatedComments.map(comment => (
                                             <CommentItem key={comment.id} comment={comment} />
@@ -376,7 +376,7 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
                                 </div>
                             </TabsContent>
                             <TabsContent value="feedback" className="m-0">
-                                <div className="w-full">
+                                <div className="w-full min-w-0 overflow-hidden">
                                     {paginatedComments.length > 0 ? (
                                         paginatedComments.map(comment => (
                                             <CommentItem key={comment.id} comment={comment} />
@@ -389,7 +389,7 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
                                 </div>
                             </TabsContent>
                             <TabsContent value="general" className="m-0">
-                                <div className="w-full">
+                                <div className="w-full min-w-0 overflow-hidden">
                                     {paginatedComments.length > 0 ? (
                                         paginatedComments.map(comment => (
                                             <CommentItem key={comment.id} comment={comment} />
