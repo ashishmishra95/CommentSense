@@ -350,7 +350,7 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
                     <div className="rounded-md border mt-4">
                         <ScrollArea className="h-[600px] w-full">
                             <TabsContent value="all" className="m-0">
-                                <div className="w-full p-4">
+                                <div className="w-full">
                                     {paginatedComments.length > 0 ? (
                                         paginatedComments.map(comment => (
                                             <CommentItem key={comment.id} comment={comment} />
@@ -363,7 +363,7 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
                                 </div>
                             </TabsContent>
                             <TabsContent value="question" className="m-0">
-                                <div className="w-full p-4">
+                                <div className="w-full">
                                     {paginatedComments.length > 0 ? (
                                         paginatedComments.map(comment => (
                                             <CommentItem key={comment.id} comment={comment} />
@@ -376,7 +376,7 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
                                 </div>
                             </TabsContent>
                             <TabsContent value="feedback" className="m-0">
-                                <div className="w-full p-4">
+                                <div className="w-full">
                                     {paginatedComments.length > 0 ? (
                                         paginatedComments.map(comment => (
                                             <CommentItem key={comment.id} comment={comment} />
@@ -389,7 +389,7 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
                                 </div>
                             </TabsContent>
                             <TabsContent value="general" className="m-0">
-                                <div className="w-full p-4">
+                                <div className="w-full">
                                     {paginatedComments.length > 0 ? (
                                         paginatedComments.map(comment => (
                                             <CommentItem key={comment.id} comment={comment} />
