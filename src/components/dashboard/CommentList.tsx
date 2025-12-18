@@ -301,7 +301,7 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
     };
 
     return (
-        <Card className="col-span-4">
+        <Card className="col-span-4 min-w-0 overflow-hidden">
             <CardHeader>
                 <div className="flex flex-col gap-4">
                     <div className="flex items-center justify-between">
@@ -339,8 +339,8 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
                 </div>
             </CardHeader>
             <CardContent>
-                <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
-                    <TabsList className="w-full">
+                <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full min-w-0">
+                    <TabsList className="w-full max-w-full overflow-x-auto">
                         <TabsTrigger value="all">All</TabsTrigger>
                         <TabsTrigger value="question">Questions</TabsTrigger>
                         <TabsTrigger value="feedback">Feedback</TabsTrigger>
