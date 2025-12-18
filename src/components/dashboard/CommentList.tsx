@@ -71,7 +71,7 @@ export function CommentList({ comments, externalFilter }: CommentListProps) {
     };
 
     const CommentItem = ({ comment }: { comment: Comment }) => (
-        <div className="p-4 border-b first:border-t last:border-0 hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors w-full min-w-0 overflow-hidden">
+        <div className="p-4 border-b first:border-t last:border-0 transition-colors w-full min-w-0 overflow-hidden">
             <div className="flex justify-between items-start mb-2 gap-2 w-full min-w-0">
                 <div className="font-semibold text-sm break-words min-w-0 flex-1 overflow-wrap-anywhere">{comment.authorDisplayName}</div>
                 <Badge variant="secondary" className={`shrink-0 ${getCategoryColor(comment.category)}`}>
