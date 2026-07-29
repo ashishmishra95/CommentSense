@@ -4,6 +4,7 @@ import { categorizeComments } from '@/lib/classifier';
 import { categorizeCommentWithAI, summarizeComments, generateCategorySummaries } from '@/lib/bytez-ai';
 
 export const maxDuration = 300; // Allow up to 5 minutes for AI processing
+export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
@@ -257,8 +258,9 @@ export async function GET(request: Request) {
     return new Response(stream, {
         headers: {
             'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
+            'Cache-Control': 'no-cache, no-transform',
             'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
         },
     });
 }
