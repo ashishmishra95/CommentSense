@@ -1,7 +1,7 @@
 // NVIDIA DeepSeek v3.1 AI Service
 import OpenAI from 'openai';
 
-const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || "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";
+const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || '';
 const MODEL_ID = "meta/llama-3.3-70b-instruct";
 
 // Initialize OpenAI client with NVIDIA base URL
