@@ -48,7 +48,8 @@ export async function GET(request: Request) {
                 // Fetch comments with progress updates
                 await fetchCommentsWithProgress(videoId, FETCH_LIMIT, (progress) => {
                     const data = `data: ${JSON.stringify({
-                        ...progress,
+                        type: progress.type,
+                        fetched: progress.fetched,
                         total: totalComments,
                         status: 'Fetching comments'
                     })}\n\n`;
