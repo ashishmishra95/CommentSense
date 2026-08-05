@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem next dev",
+    "predev": "sh scripts/gen-local-ca.sh || true",
+    "dev": "NODE_EXTRA_CA_CERTS=./certs/local-ca.pem next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"

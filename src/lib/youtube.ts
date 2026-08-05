@@ -100,6 +100,7 @@ export async function fetchCommentsWithProgress(
           textFormat: 'plainText',
           pageToken: nextPageToken,
         },
+        timeout: 10000,
       });
 
       const comments = response.data.items.map((item: any) => {

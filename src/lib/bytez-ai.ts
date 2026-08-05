@@ -4,10 +4,15 @@ import OpenAI from 'openai';
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || '';
 const MODEL_ID = "meta/llama-3.3-70b-instruct";
 
-// Initialize OpenAI client with NVIDIA base URL
+// Initialize OpenAI client with NVIDIA base URL.
+// timeout/maxRetries are set explicitly: the SDK defaults to a 10 minute timeout with 2 retries,
+// which is far longer than the route's 300s maxDuration -- a single slow request would otherwise
+// keep the function alive until the platform kills it, and the client sees nothing at all.
 const openai = new OpenAI({
     apiKey: NVIDIA_API_KEY,
     baseURL: 'https://integrate.api.nvidia.com/v1',
+    timeout: 30000, // per-request override supplied by each caller
+    maxRetries: 0, // retries are handled in runDeepSeekModel so backoff stays bounded
 });
 
 /**
@@ -20,26 +25,59 @@ function isConfigured(): boolean {
 /**
  * Helper to make requests to NVIDIA DeepSeek API
  */
-async function runDeepSeekModel(messages: { role: string; content: string }[]): Promise<string> {
+async function runDeepSeekModel(
+    messages: { role: string; content: string }[],
+    // Classifying a batch of comments takes materially longer than summarising one block of text,
+    // so callers set their own ceiling instead of sharing a single client-wide timeout.
+    timeoutMs: number = 30000
+): Promise<string> {
     if (!isConfigured()) {
         throw new Error("NVIDIA API key not configured");
     }
 
-    try {
-        const completion = await openai.chat.completions.create({
-            model: MODEL_ID,
-            messages: messages as any,
-            temperature: 0.2,
-            top_p: 0.7,
-            max_tokens: 1024,
-            stream: false // Non-streaming for simplicity in categorization/summarization
-        });
+    // Retry rate limits with backoff. Summaries are generated three at a time, which is enough
+    // concurrency to trip NVIDIA's limiter and fail all three together.
+    const MAX_ATTEMPTS = 3;
+    let lastError: any;
 
-        return completion.choices[0]?.message?.content || '';
-    } catch (error: any) {
-        console.error("NVIDIA DeepSeek request failed:", error.message);
-        throw error;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        try {
+            const completion = await openai.chat.completions.create({
+                model: MODEL_ID,
+                messages: messages as any,
+                temperature: 0.2,
+                top_p: 0.7,
+                max_tokens: 1024,
+                stream: false // Non-streaming for simplicity in categorization/summarization
+            }, { timeout: timeoutMs });
+
+            return completion.choices[0]?.message?.content || '';
+        } catch (error: any) {
+            lastError = error;
+            const status = error?.status ?? error?.response?.status;
+            const retryable = status === 429 || (status >= 500 && status < 600);
+
+            if (!retryable || attempt === MAX_ATTEMPTS - 1) break;
+
+            // Honour Retry-After when the provider sends it; otherwise back off exponentially.
+            // The previous 1s/2s waits were shorter than the rate-limit window, so every retry
+            // came straight back as another 429.
+            const retryAfterHeader = error?.headers?.['retry-after'];
+            const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : NaN;
+            const backoffMs = Number.isFinite(retryAfterMs) && retryAfterMs > 0
+                ? Math.min(retryAfterMs, 30000)
+                : 3000 * Math.pow(2, attempt); // 3s, 6s
+
+            console.warn(
+                `NVIDIA request failed (status=${status}), retrying in ${backoffMs}ms ` +
+                `(attempt ${attempt + 1}/${MAX_ATTEMPTS})`
+            );
+            await new Promise(resolve => setTimeout(resolve, backoffMs));
+        }
     }
+
+    console.error("NVIDIA request failed:", lastError?.message ?? lastError);
+    throw lastError;
 }
 
 /**
@@ -64,8 +102,17 @@ export async function summarizeText(text: string, maxLength: number = 2048): Pro
         ]);
 
         return content || 'No summary available';
-    } catch (error) {
-        console.error('Error summarizing with NVIDIA DeepSeek:', error);
+    } catch (error: any) {
+        // Log the status alongside the message: a bare "Summary unavailable" gives no way to tell
+        // a rate limit apart from a bad key or a timeout.
+        const status = error?.status ?? error?.response?.status;
+        console.error(
+            `Error summarizing with NVIDIA (status=${status ?? 'none'}):`,
+            error?.message ?? error
+        );
+
+        if (status === 429) return 'Summary unavailable (rate limited)';
+        if (status === 401 || status === 403) return 'Summary unavailable (API key rejected)';
         return 'Summary unavailable';
     }
 }
@@ -108,6 +155,73 @@ Reply with ONLY the category name in lowercase. Do not add punctuation or explan
     } catch (error) {
         // Fallback to rule-based if AI fails
         return fallbackCategorize(commentText);
+    }
+}
+
+/** Number of comments sent per AI request by categorizeCommentsBatch. */
+export const CATEGORIZE_BATCH_SIZE = 20;
+
+function parseCategory(value: string): 'question' | 'feedback' | 'general' | null {
+    const normalized = value.toLowerCase();
+    if (normalized.includes('question')) return 'question';
+    if (normalized.includes('feedback')) return 'feedback';
+    if (normalized.includes('general')) return 'general';
+    return null;
+}
+
+/**
+ * Categorize many comments in a single AI request.
+ *
+ * Classifying one comment per request means a 5,000 comment video needs thousands of calls, which
+ * exhausts the provider's per-minute rate limit long before the analysis finishes. Batching keeps
+ * the request count proportional to CATEGORIZE_BATCH_SIZE instead of to the comment count.
+ *
+ * Always returns exactly `comments.length` categories: any comment the model skips or labels
+ * unrecognizably falls back to the rule-based classifier, so callers can rely on index alignment.
+ */
+export async function categorizeCommentsBatch(
+    comments: string[]
+): Promise<Array<'question' | 'feedback' | 'general'>> {
+    if (comments.length === 0) return [];
+    if (!isConfigured()) return comments.map(fallbackCategorize);
+
+    // Keep each comment on a single line so the numbered list stays parseable, and truncate so a
+    // few very long comments cannot push the batch past the model's context window.
+    const numbered = comments
+        .map((text, i) => `${i + 1}. ${text.replace(/\s+/g, ' ').slice(0, 300)}`)
+        .join('\n');
+
+    try {
+        const content = await runDeepSeekModel([
+            {
+                role: 'system',
+                content: `You are a comment classifier. Categorize EACH numbered comment into exactly one of:
+1. "question" (asks for info/help)
+2. "feedback" (opinions, praise, criticism, suggestions)
+3. "general" (random statements, observations)
+
+Reply with one line per comment in the form "<number>: <category>", using the same numbers you were given. Output nothing else.`
+            },
+            {
+                role: 'user',
+                content: numbered
+            }
+        ], 60000);
+
+        // Map "<number>: <category>" lines back onto their original index. The model occasionally
+        // reorders or omits lines, so match on the number rather than on line position.
+        const parsed = new Map<number, 'question' | 'feedback' | 'general'>();
+        for (const line of (content || '').split('\n')) {
+            const match = line.match(/^\s*(\d+)\s*[:.)-]\s*(.+)$/);
+            if (!match) continue;
+            const category = parseCategory(match[2]);
+            if (category) parsed.set(Number(match[1]), category);
+        }
+
+        return comments.map((text, i) => parsed.get(i + 1) ?? fallbackCategorize(text));
+    } catch (error) {
+        // Rate limit or transport failure: rule-based results beat losing the batch entirely.
+        return comments.map(fallbackCategorize);
     }
 }
 
@@ -201,17 +315,17 @@ export async function generateCategorySummaries(
     generalSummary: string;
     [key: string]: string;
 }> {
-    const [questionsSummary, feedbackSummary, generalSummary] = await Promise.all([
-        questions.length > 0
-            ? summarizeText(questions.slice(0, 20).join('\n\n'))
-            : 'No questions found',
-        feedback.length > 0
-            ? summarizeText(feedback.slice(0, 20).join('\n\n'))
-            : 'No feedback found',
-        general.length > 0
-            ? summarizeText(general.slice(0, 20).join('\n\n'))
-            : 'No general comments found',
-    ]);
+    // Run these one at a time rather than with Promise.all. Firing all three at once was enough
+    // to trip the provider's rate limiter, which made every category fail together -- the
+    // "Summary unavailable" across the whole Insights panel.
+    const summarizeCategory = async (items: string[], emptyMessage: string) => {
+        if (items.length === 0) return emptyMessage;
+        return summarizeText(items.slice(0, 20).join('\n\n'));
+    };
+
+    const questionsSummary = await summarizeCategory(questions, 'No questions found');
+    const feedbackSummary = await summarizeCategory(feedback, 'No feedback found');
+    const generalSummary = await summarizeCategory(general, 'No general comments found');
 
     return {
         questionsSummary,

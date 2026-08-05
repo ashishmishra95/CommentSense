@@ -1,4 +1,4 @@
-import { categorizeCommentWithAI } from './bytez-ai';
+import { categorizeCommentsBatch } from './bytez-ai';
 
 /**
  * Configuration for parallel categorization
@@ -89,10 +89,9 @@ async function processBatchWithRetry(
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
-            const results = await Promise.all(
-                comments.map(comment => categorizeCommentWithAI(comment))
-            );
-            return results;
+            // One request for the whole batch. Previously this fanned out to one request per
+            // comment, so a single batch of 10 cost 10 calls against the provider's rate limit.
+            return await categorizeCommentsBatch(comments);
         } catch (error) {
             lastError = error as Error;
             console.warn(`Batch processing attempt ${attempt + 1} failed:`, error);

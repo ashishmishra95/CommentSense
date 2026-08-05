@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { fetchCommentsWithProgress, extractVideoId } from '@/lib/youtube';
 import { categorizeComments } from '@/lib/classifier';
-import { categorizeCommentWithAI, summarizeComments, generateCategorySummaries } from '@/lib/bytez-ai';
+import { categorizeCommentWithAI, summarizeComments, generateCategorySummaries, CATEGORIZE_BATCH_SIZE } from '@/lib/bytez-ai';
 
 export const maxDuration = 300; // Allow up to 5 minutes for AI processing
 export const dynamic = 'force-dynamic';
@@ -24,6 +24,12 @@ export async function GET(request: Request) {
     const stream = new ReadableStream({
         async start(controller) {
             try {
+                // Immediately send an initial ping to flush HTTP headers to the client
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+                    type: 'status',
+                    status: 'Connecting to YouTube...'
+                })}\n\n`));
+
                 let allComments: any[] = [];
                 let totalComments = 0;
 
@@ -31,7 +37,8 @@ export async function GET(request: Request) {
                 try {
                     const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
                     const videoResponse = await fetch(
-                        `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoId}&key=${YOUTUBE_API_KEY}`
+                        `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoId}&key=${YOUTUBE_API_KEY}`,
+                        { signal: AbortSignal.timeout(5000) }
                     );
                     const videoData = await videoResponse.json();
                     if (videoData.items && videoData.items[0]) {
@@ -41,20 +48,28 @@ export async function GET(request: Request) {
                     console.error('Error fetching video stats:', err);
                 }
 
-                // Fetch all available comments (no artificial limit)
-                // YouTube API will naturally stop when no more comments are available
-                const FETCH_LIMIT = 0; // 0 = unlimited, fetch all available comments
+                // Cap how many comments a single run will fetch.
+                // The YouTube API returns ~100 comments per request at roughly 300/sec, so an
+                // unbounded fetch on a popular video runs past `maxDuration` and the function is
+                // killed before it can emit a 'complete' event. Capping keeps every run well
+                // inside the limit; videos with more comments are analyzed as a sample.
+                const FETCH_LIMIT = 5000;
+
+                // Progress is reported against the capped target, not the video's full comment
+                // count, otherwise the bar sits at 0.0% for the entire run.
+                const progressTarget = totalComments > 0
+                    ? Math.min(totalComments, FETCH_LIMIT)
+                    : FETCH_LIMIT;
 
                 // Fetch comments with progress updates
-                await fetchCommentsWithProgress(videoId, FETCH_LIMIT, (progress) => {
+                allComments = await fetchCommentsWithProgress(videoId, FETCH_LIMIT, (progress) => {
                     const data = `data: ${JSON.stringify({
                         type: progress.type,
-                        fetched: progress.fetched,
-                        total: totalComments,
+                        fetched: Math.min(progress.fetched, progressTarget),
+                        total: progressTarget,
                         status: 'Fetching comments'
                     })}\n\n`;
                     controller.enqueue(encoder.encode(data));
-                    allComments = progress.comments;
                 });
 
                 // Send filtering status
@@ -143,29 +158,69 @@ export async function GET(request: Request) {
 
                     const { parallelCategorizeComments } = await import('@/lib/parallelCategorizer');
 
-                    const result = await parallelCategorizeComments(
-                        commentsToProcess.map(c => c.textOriginal),
-                        {
-                            batchSize: 10, // Reduced from 50 to ensure frequent updates
-                            maxParallelBatches: 5, // Reduced from 10 to avoid rate limits (50 concurrent reqs)
-                            initialDelayMs: 100,
-                            maxRetries: 2,
-                            onProgress: (progress, processed, total) => {
-                                // Send progress update to client
-                                controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-                                    type: 'ai-progress',
-                                    progress,
-                                    message: `Categorizing: ${processed}/${total} comments (${progress}%)`
-                                })}\n\n`));
-                            }
-                        }
-                    );
+                    // Hard budget for the AI phase. Every AI call is one request per comment, so if
+                    // the provider is slow or rate limiting, categorization can outlast the
+                    // function's own time limit -- which kills the request before any result is
+                    // sent and leaves the client waiting forever. If the budget is blown we fall
+                    // back to rule-based categorization, which always returns.
+                    const AI_BUDGET_MS = 120000;
+                    const budgetExpired = Symbol('ai-budget-expired');
+                    let budgetTimer: ReturnType<typeof setTimeout> | undefined;
 
-                    // Map categories back to processed comments
-                    const processedWithCategories = commentsToProcess.map((comment, index) => ({
-                        ...comment,
-                        category: result.categories[index],
-                    }));
+                    const result = await Promise.race([
+                        parallelCategorizeComments(
+                            commentsToProcess.map(c => c.textOriginal),
+                            {
+                                // Each batch is now a single AI request covering every comment in
+                                // it, so these two numbers bound requests-in-flight at 5 rather
+                                // than the 50 that used to trip the provider's rate limiter.
+                                batchSize: CATEGORIZE_BATCH_SIZE,
+                                maxParallelBatches: 5,
+                                initialDelayMs: 100,
+                                maxRetries: 1,
+                                onProgress: (progress, processed, total) => {
+                                    // Send progress update to client
+                                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+                                        type: 'ai-progress',
+                                        progress,
+                                        message: `Categorizing: ${processed}/${total} comments (${progress}%)`
+                                    })}\n\n`));
+                                }
+                            }
+                        ),
+                        new Promise<typeof budgetExpired>(resolve => {
+                            budgetTimer = setTimeout(() => resolve(budgetExpired), AI_BUDGET_MS);
+                        }),
+                    ]).finally(() => {
+                        if (budgetTimer) clearTimeout(budgetTimer);
+                    });
+
+                    let processedWithCategories;
+                    // Set when the AI provider proved unusable for this request, so we can skip
+                    // the summary calls instead of waiting out a second timeout against a service
+                    // that has already failed.
+                    let aiUnavailable = false;
+
+                    if (result === budgetExpired) {
+                        aiUnavailable = true;
+                        console.warn(`AI categorization exceeded ${AI_BUDGET_MS}ms, using rule-based results`);
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+                            type: 'ai-processing',
+                            message: 'AI is taking too long — finishing with fast categorization...',
+                            status: 'Categorizing comments'
+                        })}\n\n`));
+
+                        const { categorizeComments: ruleCategorize } = await import('@/lib/classifier');
+                        processedWithCategories = ruleCategorize(commentsToProcess);
+                    } else {
+                        // Map categories back to processed comments
+                        processedWithCategories = commentsToProcess.map((comment, index) => ({
+                            ...comment,
+                            category: result.categories[index],
+                        }));
+
+                        console.log(`Categorization stats:`, result.stats);
+                    }
 
                     if (isSampled) {
                         // For sampled processing, use rule-based categorization for remaining comments
@@ -189,10 +244,6 @@ export async function GET(request: Request) {
                         categorizedComments = processedWithCategories;
                     }
 
-                    console.log(`Categorization stats:`, result.stats);
-                    console.log(`Total time: ${(result.stats.totalTime / 1000).toFixed(2)}s`);
-                    console.log(`Average per comment: ${result.stats.averageTimePerComment.toFixed(2)}ms`);
-
                     // Generate summaries
                     controller.enqueue(encoder.encode(`data: ${JSON.stringify({
                         type: 'ai-processing',
@@ -211,16 +262,38 @@ export async function GET(request: Request) {
                         .filter(c => c.category === 'general')
                         .map(c => c.textOriginal);
 
-                    // Generate category-specific summaries
-                    const categorySummaries = await generateCategorySummaries(
-                        questionTexts,
-                        feedbackTexts,
-                        generalTexts
-                    );
+                    // Generate category-specific summaries, bounded so a stalled provider can
+                    // never cost us the whole result -- the comments are already categorized at
+                    // this point and are worth delivering even without summaries.
+                    const SUMMARY_BUDGET_MS = 60000;
+                    let summaryTimer: ReturnType<typeof setTimeout> | undefined;
+
+                    const categorySummaries = aiUnavailable
+                        ? null
+                        : await Promise.race([
+                            generateCategorySummaries(questionTexts, feedbackTexts, generalTexts),
+                            new Promise<null>(resolve => {
+                                summaryTimer = setTimeout(() => resolve(null), SUMMARY_BUDGET_MS);
+                            }),
+                        ]).finally(() => {
+                            if (summaryTimer) clearTimeout(summaryTimer);
+                        });
+
+                    if (!categorySummaries) {
+                        console.warn(
+                            aiUnavailable
+                                ? 'Skipping summaries: AI provider already failed during categorization'
+                                : `Summary generation exceeded ${SUMMARY_BUDGET_MS}ms, skipping`
+                        );
+                    }
 
                     summaries = {
                         overall: undefined,
-                        ...categorySummaries,
+                        ...(categorySummaries ?? {
+                            questionsSummary: 'Summary unavailable (AI service not responding)',
+                            feedbackSummary: 'Summary unavailable (AI service not responding)',
+                            generalSummary: 'Summary unavailable (AI service not responding)',
+                        }),
                     };
                 } else {
                     // Use rule-based categorization (fallback)
@@ -241,6 +314,11 @@ export async function GET(request: Request) {
                     stats,
                     comments: categorizedComments,
                     summaries,
+                    // Only true when we actually hit the cap. Comparing against the video's
+                    // commentCount would misreport, since that figure counts replies while we
+                    // fetch top-level threads only.
+                    sampled: allComments.length >= FETCH_LIMIT,
+                    availableTotal: totalComments,
                 })}\n\n`;
                 controller.enqueue(encoder.encode(finalData));
                 controller.close();

@@ -77,6 +77,21 @@ function DashboardContent() {
 
         if (!url || status === 'loading') return;
 
+        // The server can be killed mid-stream when it exceeds its function time limit. That ends
+        // the connection without a 'complete' or 'error' event, so track completion explicitly
+        // and keep a watchdog running -- otherwise the spinner never stops.
+        let completed = false;
+        let watchdog: ReturnType<typeof setTimeout> | undefined;
+
+        const finish = () => {
+            completed = true;
+            if (watchdog) clearTimeout(watchdog);
+            if (eventSourceRef.current) {
+                eventSourceRef.current.close();
+                eventSourceRef.current = null;
+            }
+        };
+
         const fetchData = async () => {
             try {
                 setLoading(true);
@@ -85,6 +100,16 @@ function DashboardContent() {
                 // Use EventSource for streaming progress
                 const eventSource = new EventSource(`/api/analyze-stream?url=${encodeURIComponent(url)}&useAI=${useAI}`);
                 eventSourceRef.current = eventSource;
+
+                // Slightly beyond the server's 300s maxDuration, so this only ever fires when the
+                // server has already given up.
+                watchdog = setTimeout(() => {
+                    if (completed) return;
+                    setError('Analysis timed out. Try a video with fewer comments.');
+                    setLoading(false);
+                    setAiProcessing(false);
+                    finish();
+                }, 320000);
 
                 eventSource.onmessage = (event) => {
                     const progress = JSON.parse(event.data);
@@ -114,35 +139,44 @@ function DashboardContent() {
                         setData(progress);
                         setLoading(false);
                         setAiProcessing(false);
-                        eventSource.close();
-                        eventSourceRef.current = null;
+                        finish();
                     } else if (progress.type === 'error') {
                         setError(progress.error || 'Failed to fetch comments');
                         setLoading(false);
                         setAiProcessing(false);
-                        eventSource.close();
-                        eventSourceRef.current = null;
+                        finish();
                     }
                 };
 
                 eventSource.onerror = () => {
-                    setError('Connection error. Please try again.');
+                    // Already finished cleanly -- the browser fires onerror when the server closes
+                    // a completed stream, which is not a failure.
+                    if (completed) return;
+
+                    // close() here also stops EventSource from silently reconnecting and
+                    // restarting the whole analysis.
+                    setError(
+                        'Analysis stopped before it finished. This usually means the video has too ' +
+                        'many comments to process in one run. Please try again.'
+                    );
                     setLoading(false);
-                    eventSource.close();
-                    eventSourceRef.current = null;
+                    setAiProcessing(false);
+                    finish();
                 };
 
             } catch (err) {
                 setError('Failed to fetch comments. Please check the URL and try again.');
                 console.error(err);
                 setLoading(false);
+                finish();
             }
         };
 
         fetchData();
 
-        // Cleanup function to close EventSource on unmount
+        // Cleanup function to close EventSource and cancel the watchdog on unmount
         return () => {
+            if (watchdog) clearTimeout(watchdog);
             if (eventSourceRef.current) {
                 eventSourceRef.current.close();
                 eventSourceRef.current = null;
