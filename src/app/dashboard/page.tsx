@@ -69,16 +69,13 @@ const CATEGORIZE_CHUNK = 50;
 const CATEGORIZE_CONCURRENCY = 16;
 
 /**
- * Retry passes over chunks the provider rate-limited.
+ * Backoff attempts per chunk when the provider rate-limits it.
  *
- * Sustained load produces a burst allowance, then roughly 30s of throttling, then recovery. Chunks
- * caught in that window come back rule-labeled, so they are retried once it passes; without this a
- * long run quietly loses a quarter of its AI labels.
+ * Sustained load produces a burst allowance, then roughly 30s of throttling, then recovery. Waits
+ * of 5s, 10s and 20s cover that window, and because the worker sleeps rather than moving on, the
+ * retry also relieves the pressure causing the throttling.
  */
-const AI_RETRY_ROUNDS = 3;
-
-/** Pause before a retry pass, long enough for the throttling window to clear. */
-const AI_RETRY_PAUSE_MS = 20000;
+const AI_CHUNK_RETRIES = 3;
 
 export default function DashboardPage() {
     return (
@@ -195,101 +192,93 @@ function DashboardContent() {
                 let usedAI = false;
                 let done = 0;
                 let aiStillWorking = useAI;
-                // A large video is hundreds of chunks, and the provider rejects the occasional one
-                // under load. Giving up on AI after a single miss -- as this used to -- silently
-                // rule-classified almost everything: a 14k run finished in 28s at a rate the model
-                // cannot reach, with 80% of comments landing in "general". Only a sustained run of
-                // failures means the service is actually down.
-                const AI_FAILURE_TOLERANCE = 8;
-                let consecutiveAiFailures = 0;
+                // Distinguishing "throttled" from "down" by counting failures does not work: 16
+                // workers moving through a ~30s throttling window produce dozens of failures with
+                // nothing wrong. Counting them abandoned AI at chunk 59 of 293 and left 86% of a
+                // run rule-labeled. Elapsed time since the last success separates the two --
+                // throttling recovers within a minute, an outage does not.
+                const AI_OUTAGE_MS = 150000;
+                let lastAiSuccess = Date.now();
 
                 const chunkStarts: number[] = [];
                 for (let i = 0; i < comments.length; i += CATEGORIZE_CHUNK) chunkStarts.push(i);
 
-                // Chunks the provider throttled. Their comments currently hold rule-based labels,
-                // which is a real accuracy loss, so they are retried once the burst allowance has
-                // recovered rather than accepted.
-                let throttled: number[] = [];
+                let ruleLabeledChunks = 0;
 
-                const runChunk = async (start: number, isRetry: boolean) => {
-                    const chunk = comments.slice(start, start + CATEGORIZE_CHUNK);
+                const postChunk = async (chunk: any[], withAI: boolean) => {
                     const res = await fetch('/api/categorize', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            texts: chunk.map(c => c.textOriginal),
-                            useAI: aiStillWorking,
-                        }),
+                        body: JSON.stringify({ texts: chunk.map(c => c.textOriginal), useAI: withAI }),
                         signal: abort.signal,
                     });
                     if (!res.ok) throw new Error('Failed to categorize comments');
+                    return res.json();
+                };
 
-                    const result = await res.json();
-                    result.categories.forEach((category: any, offset: number) => {
-                        categories[start + offset] = category;
-                    });
+                const runChunk = async (start: number) => {
+                    const chunk = comments.slice(start, start + CATEGORIZE_CHUNK);
 
-                    if (result.usedAI) {
-                        usedAI = true;
-                        consecutiveAiFailures = 0;
-                    } else if (aiStillWorking) {
-                        throttled.push(start);
-                        consecutiveAiFailures++;
-                        if (consecutiveAiFailures >= AI_FAILURE_TOLERANCE) {
+                    // Back off and retry this chunk rather than moving on. Throttling is a signal
+                    // to slow down, so sleeping here also reduces the load causing it -- which a
+                    // fixed worker pool cannot express any other way. Accepting the rule-based
+                    // answer immediately instead lost 86% of AI labels on a 14k-comment run.
+                    for (let attempt = 0; ; attempt++) {
+                        const result = await postChunk(chunk, aiStillWorking);
+                        result.categories.forEach((category: any, offset: number) => {
+                            categories[start + offset] = category;
+                        });
+
+                        if (result.usedAI) {
+                            usedAI = true;
+                            lastAiSuccess = Date.now();
+                            break;
+                        }
+
+                        if (!aiStillWorking) break;
+
+                        if (Date.now() - lastAiSuccess > AI_OUTAGE_MS) {
                             console.warn(
-                                `AI categorization failed ${consecutiveAiFailures} times in a row; ` +
-                                'continuing with rule-based classification'
+                                `No successful AI response in ${Math.round(AI_OUTAGE_MS / 1000)}s; ` +
+                                'finishing with rule-based classification'
                             );
                             aiStillWorking = false;
+                            break;
                         }
+
+                        if (attempt >= AI_CHUNK_RETRIES) {
+                            ruleLabeledChunks++;
+                            break;
+                        }
+
+                        // 5s, 10s, 20s -- the throttling window measured ~30s.
+                        await new Promise(resolve => setTimeout(resolve, 5000 * Math.pow(2, attempt)));
+                        if (abort.signal.aborted) return;
                     }
 
-                    // Retries revisit comments already counted, so only the first pass advances
-                    // the counter -- otherwise progress would exceed the total.
-                    if (!isRetry) {
-                        done += chunk.length;
-                        setAiProgress(Math.round((done / comments.length) * 100));
-                        setFetchProgress(done);
-                        setAiMessage(
-                            `Categorizing ${done.toLocaleString()}/${comments.length.toLocaleString()} comments`
-                        );
-                    }
+                    done += chunk.length;
+                    setAiProgress(Math.round((done / comments.length) * 100));
+                    setFetchProgress(done);
+                    setAiMessage(
+                        `Categorizing ${done.toLocaleString()}/${comments.length.toLocaleString()} comments`
+                    );
                 };
 
                 // Fixed pool of workers pulling from a shared queue, so a slow chunk holds up only
                 // itself rather than a whole batch of them.
-                const drain = async (queue: number[], isRetry: boolean) => {
-                    let next = 0;
-                    await Promise.all(
-                        Array.from({ length: Math.min(CATEGORIZE_CONCURRENCY, queue.length) }, async () => {
-                            while (next < queue.length) {
-                                await runChunk(queue[next++], isRetry);
-                            }
-                        })
-                    );
-                };
+                let nextChunk = 0;
+                await Promise.all(
+                    Array.from({ length: Math.min(CATEGORIZE_CONCURRENCY, chunkStarts.length) }, async () => {
+                        while (nextChunk < chunkStarts.length) {
+                            await runChunk(chunkStarts[nextChunk++]);
+                        }
+                    })
+                );
 
-                await drain(chunkStarts, false);
-
-                // Throttling is transient -- measured as a ~30s dip that recovers on its own -- so
-                // pause and retry rather than leaving those comments on rule-based labels.
-                for (let round = 0; round < AI_RETRY_ROUNDS && throttled.length > 0 && aiStillWorking; round++) {
-                    const pending = throttled;
-                    throttled = [];
-                    consecutiveAiFailures = 0;
-
-                    const count = pending.length * CATEGORIZE_CHUNK;
-                    setAiMessage(`Retrying ${count.toLocaleString()} comments the AI service rate-limited...`);
-                    await new Promise(resolve => setTimeout(resolve, AI_RETRY_PAUSE_MS));
-                    if (abort.signal.aborted) return;
-
-                    await drain(pending, true);
-                }
-
-                if (throttled.length > 0) {
+                if (ruleLabeledChunks > 0) {
                     console.warn(
-                        `${throttled.length * CATEGORIZE_CHUNK} comments kept rule-based labels ` +
-                        'after exhausting AI retries'
+                        `${(ruleLabeledChunks * CATEGORIZE_CHUNK).toLocaleString()} comments kept ` +
+                        'rule-based labels after exhausting AI retries'
                     );
                 }
 
