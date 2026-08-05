@@ -29,9 +29,10 @@ export async function GET(request: Request) {
         start(controller) {
             void (async () => {
             try {
-                // A comment line of filler. Proxies commonly hold a response until enough bytes
-                // have accumulated, so the first real event can sit in a buffer indefinitely.
-                // SSE ignores lines beginning with ':', so this is inert to the client.
+                // A comment line of filler, to satisfy proxies that hold a response until enough
+                // bytes have accumulated. SSE ignores lines beginning with ':', so this is inert
+                // to the client. Note this does not defeat a proxy that buffers the entire body
+                // regardless of size -- see /api/stream-test for how to tell the two apart.
                 controller.enqueue(encoder.encode(`:${' '.repeat(2048)}\n\n`));
 
                 // Immediately send an initial ping to flush HTTP headers to the client
