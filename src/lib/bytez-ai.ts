@@ -39,7 +39,11 @@ function isConfigured(): boolean {
  * Note this deliberately calls chat/completions rather than a lighter endpoint: /v1/models kept
  * answering in under a second while inference hung indefinitely, so only inference proves inference.
  */
-export async function isAiResponsive(timeoutMs: number = 8000): Promise<boolean> {
+// Deliberately generous. A false negative here disables AI for the whole run, which is a worse
+// outcome than waiting: the failure this guards against is a service that hangs for 45s+, so a
+// slow first token still needs to pass. 8s was tight enough to fail intermittently on a healthy
+// service and skip AI on runs that would have succeeded.
+export async function isAiResponsive(timeoutMs: number = 20000): Promise<boolean> {
     if (!isConfigured()) return false;
 
     try {
