@@ -2,7 +2,14 @@
 import OpenAI from 'openai';
 
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || '';
-const MODEL_ID = "meta/llama-3.3-70b-instruct";
+
+// meta/llama-3.3-70b-instruct accepts requests on this account but never returns -- a completion
+// capped at 20 tokens produced zero bytes after 45s, repeatedly, while /v1/models answered in half
+// a second. That is what surfaced in the UI as "Summary unavailable": every AI call sat until it
+// hit a timeout. llama-3.1-8b-instruct answers the same prompts in under a second and is more than
+// adequate for three-way classification and short bullet summaries.
+// Override with NVIDIA_MODEL_ID if a different model is preferred.
+const MODEL_ID = process.env.NVIDIA_MODEL_ID || "meta/llama-3.1-8b-instruct";
 
 // Initialize OpenAI client with NVIDIA base URL.
 // timeout/maxRetries are set explicitly: the SDK defaults to a 10 minute timeout with 2 retries,
