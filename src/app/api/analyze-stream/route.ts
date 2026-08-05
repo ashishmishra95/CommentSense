@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { fetchCommentsWithProgress, extractVideoId } from '@/lib/youtube';
 import { categorizeComments } from '@/lib/classifier';
-import { categorizeCommentWithAI, summarizeComments, generateCategorySummaries, CATEGORIZE_BATCH_SIZE } from '@/lib/bytez-ai';
+import { categorizeCommentWithAI, summarizeComments, generateCategorySummaries, CATEGORIZE_BATCH_SIZE, isAiResponsive } from '@/lib/bytez-ai';
 
 export const maxDuration = 300; // Allow up to 5 minutes for AI processing
 export const dynamic = 'force-dynamic';
@@ -22,8 +22,18 @@ export async function GET(request: Request) {
 
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
-        async start(controller) {
+        // NOTE: start() must return synchronously. If it returns a promise, the platform waits
+        // for that promise to settle before treating the stream as started -- which means the
+        // whole analysis runs to completion before a single byte reaches the client, and the
+        // progress counters never move. The work is kicked off without awaiting it here.
+        start(controller) {
+            void (async () => {
             try {
+                // A comment line of filler. Proxies commonly hold a response until enough bytes
+                // have accumulated, so the first real event can sit in a buffer indefinitely.
+                // SSE ignores lines beginning with ':', so this is inert to the client.
+                controller.enqueue(encoder.encode(`:${' '.repeat(2048)}\n\n`));
+
                 // Immediately send an initial ping to flush HTTP headers to the client
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify({
                     type: 'status',
@@ -84,7 +94,29 @@ export async function GET(request: Request) {
                 let categorizedComments;
                 let summaries = undefined;
 
+                // Probe the AI service before committing to the AI path. Without this, an
+                // unresponsive provider costs the categorization budget plus the summary budget
+                // -- minutes of spinner -- to reach the same rule-based answer we can produce now.
+                let aiAvailable = false;
                 if (useAI && allComments.length > 0) {
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+                        type: 'status',
+                        status: 'Checking AI service'
+                    })}\n\n`));
+
+                    aiAvailable = await isAiResponsive();
+
+                    if (!aiAvailable) {
+                        console.warn('AI service unresponsive, using rule-based categorization');
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+                            type: 'ai-processing',
+                            message: 'AI service is not responding — categorizing without it...',
+                            status: 'Categorizing comments'
+                        })}\n\n`));
+                    }
+                }
+
+                if (useAI && aiAvailable && allComments.length > 0) {
                     // Aggressive Speed Optimization Strategy
                     // Goal: < 10s for 100k comments, < 20s for 200k+
 
@@ -298,6 +330,19 @@ export async function GET(request: Request) {
                 } else {
                     // Use rule-based categorization (fallback)
                     categorizedComments = categorizeComments(allComments);
+
+                    // If AI was asked for but the service is down, say so. Leaving summaries
+                    // undefined would hide the Insights panel entirely, which looks like the
+                    // feature is missing rather than temporarily unavailable.
+                    if (useAI && !aiAvailable && allComments.length > 0) {
+                        const unavailable = 'Summary unavailable (AI service not responding)';
+                        summaries = {
+                            overall: undefined,
+                            questionsSummary: unavailable,
+                            feedbackSummary: unavailable,
+                            generalSummary: unavailable,
+                        };
+                    }
                 }
 
                 const stats = {
@@ -331,6 +376,7 @@ export async function GET(request: Request) {
                 controller.enqueue(encoder.encode(errorData));
                 controller.close();
             }
+            })();
         },
     });
 

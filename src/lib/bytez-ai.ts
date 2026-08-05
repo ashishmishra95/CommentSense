@@ -23,6 +23,37 @@ function isConfigured(): boolean {
 }
 
 /**
+ * Cheap check that the model endpoint is actually answering.
+ *
+ * When the provider stops responding, every categorization batch and every summary has to burn its
+ * own timeout before giving up -- minutes of waiting to arrive at results we could have produced
+ * immediately. One tiny request up front lets the caller skip the AI path outright instead.
+ *
+ * Note this deliberately calls chat/completions rather than a lighter endpoint: /v1/models kept
+ * answering in under a second while inference hung indefinitely, so only inference proves inference.
+ */
+export async function isAiResponsive(timeoutMs: number = 8000): Promise<boolean> {
+    if (!isConfigured()) return false;
+
+    try {
+        await openai.chat.completions.create({
+            model: MODEL_ID,
+            messages: [{ role: 'user', content: 'ok' }],
+            max_tokens: 1,
+            stream: false,
+        }, { timeout: timeoutMs });
+        return true;
+    } catch (error: any) {
+        const status = error?.status ?? error?.response?.status;
+        // A rate limit means the service is up and we are merely being throttled; the retry and
+        // backoff in runDeepSeekModel can handle that. Anything else means don't bother.
+        if (status === 429) return true;
+        console.warn(`AI health check failed (status=${status ?? 'none'}):`, error?.message ?? error);
+        return false;
+    }
+}
+
+/**
  * Helper to make requests to NVIDIA DeepSeek API
  */
 async function runDeepSeekModel(
