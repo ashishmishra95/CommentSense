@@ -196,8 +196,15 @@ Reply with ONLY the category name in lowercase. Do not add punctuation or explan
     }
 }
 
-/** Number of comments sent per AI request by categorizeCommentsBatch. */
-export const CATEGORIZE_BATCH_SIZE = 20;
+/**
+ * Number of comments sent per AI request by categorizeCommentsBatch.
+ *
+ * Round-trip latency dominates here, not batch size: 50 comments come back in about the same time
+ * as 20. Larger batches therefore cut total wall-clock roughly proportionally, which is what keeps
+ * a sampled 1000-comment run inside its budget when running from the deployment. Verified that the
+ * model returns all 50 labels with finish_reason "stop" rather than truncating.
+ */
+export const CATEGORIZE_BATCH_SIZE = 50;
 
 function parseCategory(value: string): 'question' | 'feedback' | 'general' | null {
     const normalized = value.toLowerCase();
