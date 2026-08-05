@@ -7,8 +7,15 @@ import { categorizeComment } from '@/lib/classifier';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-/** Comments per request. Kept well inside maxDuration even when the provider is slow. */
+/** Comments per AI request. Kept well inside maxDuration even when the provider is slow. */
 export const CHUNK_SIZE = 200;
+
+/**
+ * Comments per rule-based request. Classification is pure CPU with no network call, so far more
+ * fits in one request -- which matters because the bulk of a large video is categorized this way
+ * and each round trip would otherwise be pure overhead.
+ */
+export const RULE_CHUNK_SIZE = 2000;
 
 export async function POST(request: Request) {
     let body: { texts?: string[]; useAI?: boolean };
@@ -22,9 +29,10 @@ export async function POST(request: Request) {
     if (!Array.isArray(texts) || texts.length === 0) {
         return NextResponse.json({ error: 'texts must be a non-empty array' }, { status: 400 });
     }
-    if (texts.length > CHUNK_SIZE) {
+    const limit = body.useAI === false ? RULE_CHUNK_SIZE : CHUNK_SIZE;
+    if (texts.length > limit) {
         return NextResponse.json(
-            { error: `texts exceeds the ${CHUNK_SIZE} per-request limit` },
+            { error: `texts exceeds the ${limit} per-request limit` },
             { status: 400 }
         );
     }

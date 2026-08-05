@@ -58,6 +58,18 @@ const FETCH_LIMIT = 5000;
 /** Comments sent per categorize request. Must not exceed the route's own CHUNK_SIZE. */
 const CATEGORIZE_CHUNK = 200;
 
+/** Comments per rule-based request. Must not exceed the route's own RULE_CHUNK_SIZE. */
+const RULE_CHUNK = 2000;
+
+/**
+ * How many comments go through the model.
+ *
+ * Each AI request costs a round trip measured in seconds, so classifying all 5000 would take
+ * minutes. The rest are classified by rule, which is what the previous implementation did too --
+ * it sampled once past 1000 comments.
+ */
+const AI_SAMPLE_LIMIT = 1000;
+
 export default function DashboardPage() {
     return (
         <Suspense fallback={<div className="flex items-center justify-center min-h-screen"><Loader2 className="h-8 w-8 animate-spin" /></div>}>
@@ -170,16 +182,17 @@ function DashboardContent() {
                 // unresponsive provider costs its timeout on every remaining chunk.
                 let aiStillWorking = useAI;
 
-                for (let i = 0; i < comments.length; i += CATEGORIZE_CHUNK) {
-                    const chunk = comments.slice(i, i + CATEGORIZE_CHUNK);
-                    setAiMessage(`Categorizing ${i.toLocaleString()}/${comments.length.toLocaleString()} comments`);
+                // Only the first slice goes through the model; the remainder is classified by
+                // rule, in far larger chunks since that path makes no network call of its own.
+                const aiCutoff = useAI ? Math.min(comments.length, AI_SAMPLE_LIMIT) : 0;
 
+                const runChunk = async (chunk: any[], withAI: boolean) => {
                     const res = await fetch('/api/categorize', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             texts: chunk.map(c => c.textOriginal),
-                            useAI: aiStillWorking,
+                            useAI: withAI,
                         }),
                         signal: abort.signal,
                     });
@@ -189,12 +202,23 @@ function DashboardContent() {
                     categories.push(...result.categories);
                     if (result.usedAI) {
                         usedAI = true;
-                    } else if (aiStillWorking) {
+                    } else if (withAI && aiStillWorking) {
                         console.warn('AI categorization unavailable; continuing with rule-based');
                         aiStillWorking = false;
                     }
 
                     setAiProgress(Math.round((categories.length / comments.length) * 100));
+                    setAiMessage(
+                        `Categorizing ${categories.length.toLocaleString()}/${comments.length.toLocaleString()} comments`
+                    );
+                };
+
+                for (let i = 0; i < aiCutoff; i += CATEGORIZE_CHUNK) {
+                    await runChunk(comments.slice(i, Math.min(i + CATEGORIZE_CHUNK, aiCutoff)), aiStillWorking);
+                }
+
+                for (let i = aiCutoff; i < comments.length; i += RULE_CHUNK) {
+                    await runChunk(comments.slice(i, i + RULE_CHUNK), false);
                 }
 
                 const categorizedComments = comments.map((comment, i) => ({
