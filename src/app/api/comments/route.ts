@@ -7,7 +7,17 @@ import { fetchCommentsPage, fetchVideoCommentCount, extractVideoId } from '@/lib
 // while the work is happening. Networks that buffer responses hold the entire body until the
 // request completes, so every event lands at once at the end. Short requests avoid that entirely.
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30;
+export const maxDuration = 60;
+
+/**
+ * YouTube pages fetched per request.
+ *
+ * Paging is strictly sequential -- each page needs the previous page's token -- so the only way to
+ * speed fetching up is to remove round trips, not to parallelize. Walking several pages inside one
+ * request trades counter granularity for throughput: the server reaches YouTube faster than the
+ * browser reaches the server and back.
+ */
+const PAGES_PER_REQUEST = 5;
 
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
@@ -26,18 +36,31 @@ export async function GET(request: Request) {
     }
 
     try {
-        const [page, availableTotal] = await Promise.all([
-            fetchCommentsPage(videoId, pageToken),
-            includeTotal ? fetchVideoCommentCount(videoId) : Promise.resolve(undefined),
-        ]);
+        const totalPromise = includeTotal
+            ? fetchVideoCommentCount(videoId)
+            : Promise.resolve(undefined);
+
+        const comments = [];
+        let token = pageToken;
+        let exhausted = false;
+
+        for (let i = 0; i < PAGES_PER_REQUEST; i++) {
+            const page = await fetchCommentsPage(videoId, token);
+            comments.push(...page.comments);
+            token = page.nextPageToken;
+            if (!token) {
+                exhausted = true;
+                break;
+            }
+        }
 
         return NextResponse.json({
             videoId,
-            comments: page.comments,
-            nextPageToken: page.nextPageToken ?? null,
+            comments,
+            nextPageToken: exhausted ? null : token ?? null,
             // YouTube counts replies here while we fetch top-level threads only, so this is an
             // upper bound on what the client will actually receive, not a target to hit.
-            availableTotal,
+            availableTotal: await totalPromise,
         }, {
             headers: { 'Cache-Control': 'no-store' },
         });

@@ -7,8 +7,16 @@ import { categorizeComment } from '@/lib/classifier';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-/** Comments per AI request. Kept well inside maxDuration even when the provider is slow. */
-export const CHUNK_SIZE = 200;
+/**
+ * Comments per AI request: exactly one model call.
+ *
+ * This was 200 (four model calls per request), which took 9-18s on its own. Four such requests in
+ * flight put 16 calls on the provider at once, and stragglers pushed three of the four past the
+ * 60s function limit. Sizing a request to a single call keeps it around 10s no matter what else is
+ * running, and concurrency is managed by the client instead -- measured throughput peaks near 24
+ * calls in flight (~82 comments/sec) and degrades into 429s beyond that.
+ */
+export const CHUNK_SIZE = 50;
 
 /**
  * Comments per rule-based request. Classification is pure CPU with no network call, so far more

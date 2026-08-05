@@ -48,27 +48,25 @@ interface DashboardData {
 }
 
 /**
- * Comments analyzed per run.
+ * Safety ceiling on comments fetched, not a target.
  *
- * Fetching is unbounded at the API level, but a popular video has millions of comments and no
- * single run can process them; capping keeps every analysis finishing in a predictable time.
+ * Every comment is fetched and classified; this exists only so a pathological video cannot run
+ * indefinitely. Fetching is ~1500 comments/sec and classification ~82/sec, so this bounds a run at
+ * roughly 40 minutes.
  */
-const FETCH_LIMIT = 5000;
+const FETCH_LIMIT = 200000;
 
-/** Comments sent per categorize request. Must not exceed the route's own CHUNK_SIZE. */
-const CATEGORIZE_CHUNK = 200;
-
-/** Comments per rule-based request. Must not exceed the route's own RULE_CHUNK_SIZE. */
-const RULE_CHUNK = 2000;
+/** Comments sent per categorize request. Must match the route's CHUNK_SIZE (one model call). */
+const CATEGORIZE_CHUNK = 50;
 
 /**
- * How many comments go through the model.
+ * Categorize requests kept in flight.
  *
- * Each AI request costs a round trip measured in seconds, so classifying all 5000 would take
- * minutes. The rest are classified by rule, which is what the previous implementation did too --
- * it sampled once past 1000 comments.
+ * Throughput measured against the provider: 8 concurrent gave ~43 comments/sec, 24 gave ~82, and
+ * 32 started returning 429s with stragglers dragging wall-clock back down. 16 sits inside the
+ * useful range with headroom, since each request is one model call.
  */
-const AI_SAMPLE_LIMIT = 1000;
+const CATEGORIZE_CONCURRENCY = 16;
 
 export default function DashboardPage() {
     return (
@@ -158,10 +156,11 @@ function DashboardContent() {
                     collected.push(...page.comments);
 
                     if (page.availableTotal) {
+                        // The video's own comment count, shown as-is. It counts replies while this
+                        // fetches top-level threads, so the run finishes below it -- the loading
+                        // screen says so rather than pretending the target was the cap.
                         availableTotal = page.availableTotal;
-                        // YouTube's count includes replies while we fetch top-level threads, so
-                        // showing it raw would leave the counter stuck short of its target.
-                        setTotalComments(Math.min(availableTotal, FETCH_LIMIT));
+                        setTotalComments(availableTotal);
                     }
                     setFetchProgress(collected.length);
 
@@ -169,57 +168,71 @@ function DashboardContent() {
                 } while (pageToken && collected.length < FETCH_LIMIT);
 
                 const comments = collected.slice(0, FETCH_LIMIT);
+                // Categorization works through what was actually fetched, so the counter switches
+                // to that as its target for the next phase.
                 setTotalComments(comments.length);
-                setFetchProgress(comments.length);
+                setFetchProgress(0);
 
                 // 2. Categorize in chunks, reporting progress across them.
                 setAiProcessing(true);
                 setFetchStatus('Categorizing comments');
 
-                const categories: Array<'question' | 'feedback' | 'general'> = [];
+                // Every comment goes through the model. Results are written back by index rather
+                // than appended, because chunks finish out of order when run concurrently.
+                const categories: Array<'question' | 'feedback' | 'general'> = new Array(comments.length);
                 let usedAI = false;
+                let done = 0;
                 // Once a chunk comes back without AI, stop asking for it on the rest. Otherwise an
                 // unresponsive provider costs its timeout on every remaining chunk.
                 let aiStillWorking = useAI;
 
-                // Only the first slice goes through the model; the remainder is classified by
-                // rule, in far larger chunks since that path makes no network call of its own.
-                const aiCutoff = useAI ? Math.min(comments.length, AI_SAMPLE_LIMIT) : 0;
+                const chunkStarts: number[] = [];
+                for (let i = 0; i < comments.length; i += CATEGORIZE_CHUNK) chunkStarts.push(i);
 
-                const runChunk = async (chunk: any[], withAI: boolean) => {
+                const runChunk = async (start: number) => {
+                    const chunk = comments.slice(start, start + CATEGORIZE_CHUNK);
                     const res = await fetch('/api/categorize', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             texts: chunk.map(c => c.textOriginal),
-                            useAI: withAI,
+                            useAI: aiStillWorking,
                         }),
                         signal: abort.signal,
                     });
                     if (!res.ok) throw new Error('Failed to categorize comments');
 
                     const result = await res.json();
-                    categories.push(...result.categories);
+                    result.categories.forEach((category: any, offset: number) => {
+                        categories[start + offset] = category;
+                    });
+
                     if (result.usedAI) {
                         usedAI = true;
-                    } else if (withAI && aiStillWorking) {
+                    } else if (aiStillWorking) {
                         console.warn('AI categorization unavailable; continuing with rule-based');
                         aiStillWorking = false;
                     }
 
-                    setAiProgress(Math.round((categories.length / comments.length) * 100));
+                    done += chunk.length;
+                    setAiProgress(Math.round((done / comments.length) * 100));
+                    setFetchProgress(done);
                     setAiMessage(
-                        `Categorizing ${categories.length.toLocaleString()}/${comments.length.toLocaleString()} comments`
+                        `Categorizing ${done.toLocaleString()}/${comments.length.toLocaleString()} comments`
                     );
                 };
 
-                for (let i = 0; i < aiCutoff; i += CATEGORIZE_CHUNK) {
-                    await runChunk(comments.slice(i, Math.min(i + CATEGORIZE_CHUNK, aiCutoff)), aiStillWorking);
-                }
-
-                for (let i = aiCutoff; i < comments.length; i += RULE_CHUNK) {
-                    await runChunk(comments.slice(i, i + RULE_CHUNK), false);
-                }
+                // Fixed pool of workers pulling from a shared queue, so a slow chunk holds up only
+                // itself rather than a whole batch of them.
+                let nextChunk = 0;
+                await Promise.all(
+                    Array.from({ length: Math.min(CATEGORIZE_CONCURRENCY, chunkStarts.length) }, async () => {
+                        while (nextChunk < chunkStarts.length) {
+                            const index = nextChunk++;
+                            await runChunk(chunkStarts[index]);
+                        }
+                    })
+                );
 
                 const categorizedComments = comments.map((comment, i) => ({
                     ...comment,
@@ -399,12 +412,10 @@ function DashboardContent() {
                                 <div className="text-2xl font-semibold tracking-tight text-foreground/70">
                                     {elapsedSeconds}s elapsed
                                 </div>
-                            ) : aiProcessing ? (
-                                <div className="flex items-baseline justify-center gap-2 text-4xl font-bold tracking-tight text-foreground/80">
-                                    <span>{aiProgress > 0 ? Math.floor((aiProgress / 100) * totalComments).toLocaleString() : '...'}</span>
-                                    <span className="text-2xl text-muted-foreground font-normal">/ {totalComments > 0 ? totalComments.toLocaleString() : '...'}</span>
-                                </div>
                             ) : (
+                                // Both phases report a real count against a real target, so the
+                                // display is the same for each. Deriving the number from a rounded
+                                // percentage, as this used to, made it drift from the true count.
                                 <div className="flex items-baseline justify-center gap-2 text-4xl font-bold tracking-tight text-foreground/80">
                                     <span>{fetchProgress.toLocaleString()}</span>
                                     <span className="text-2xl text-muted-foreground font-normal">/ {totalComments > 0 ? totalComments.toLocaleString() : '...'}</span>
@@ -418,6 +429,15 @@ function DashboardContent() {
                                 ? `${currentProgress.toFixed(1)}% | ${fetchStatus}`
                                 : 'This can take a minute on large videos'}
                         </p>
+
+                        {/* The fetch total comes from YouTube and counts replies, while this
+                            fetches top-level comments only -- so the run ends below the target.
+                            Saying that up front stops it reading as an incomplete run. */}
+                        {!aiProcessing && hasProgress && (
+                            <p className="text-xs text-muted-foreground/70 pt-1">
+                                Total includes replies; this analyzes top-level comments
+                            </p>
+                        )}
                     </div>
 
                     {/* Progress Bar */}
