@@ -44,6 +44,13 @@ export async function GET(request: Request) {
                 let allComments: any[] = [];
                 let totalComments = 0;
 
+                // Start the AI health check now and read it after fetching. It talks to a
+                // different service than the fetch does, so running it here costs no wall-clock
+                // instead of adding a round trip to the critical path.
+                const aiProbe: Promise<boolean> = useAI
+                    ? isAiResponsive().catch(() => false)
+                    : Promise.resolve(false);
+
                 // First, get the total comment count from video statistics
                 try {
                     const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
@@ -89,23 +96,15 @@ export async function GET(request: Request) {
                     status: 'Filtering spam comments'
                 })}\n\n`));
 
-                // Add a small delay so users can see the filtering message
-                await new Promise(resolve => setTimeout(resolve, 1500));
-
                 let categorizedComments;
                 let summaries = undefined;
 
-                // Probe the AI service before committing to the AI path. Without this, an
-                // unresponsive provider costs the categorization budget plus the summary budget
-                // -- minutes of spinner -- to reach the same rule-based answer we can produce now.
+                // Read the health check started before fetching. Skipping the AI path outright
+                // when the provider is unresponsive avoids spending the categorization budget
+                // plus the summary budget to reach the rule-based answer available immediately.
                 let aiAvailable = false;
                 if (useAI && allComments.length > 0) {
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-                        type: 'status',
-                        status: 'Checking AI service'
-                    })}\n\n`));
-
-                    aiAvailable = await isAiResponsive();
+                    aiAvailable = await aiProbe;
 
                     if (!aiAvailable) {
                         console.warn('AI service unresponsive, using rule-based categorization');
