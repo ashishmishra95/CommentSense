@@ -304,7 +304,7 @@ export async function GET(request: Request) {
                     // Generate category-specific summaries, bounded so a stalled provider can
                     // never cost us the whole result -- the comments are already categorized at
                     // this point and are worth delivering even without summaries.
-                    const SUMMARY_BUDGET_MS = 60000;
+                    const SUMMARY_BUDGET_MS = 120000;
                     let summaryTimer: ReturnType<typeof setTimeout> | undefined;
 
                     const categorySummaries = aiUnavailable
@@ -326,12 +326,19 @@ export async function GET(request: Request) {
                         );
                     }
 
+                    // Distinguish the two ways this lands here: the provider never answered, versus
+                    // it answered too slowly. They call for different follow-up, so don't report
+                    // a timeout as an outage.
+                    const summaryFallback = aiUnavailable
+                        ? 'Summary unavailable (AI service not responding)'
+                        : 'Summary unavailable (took too long to generate)';
+
                     summaries = {
                         overall: undefined,
                         ...(categorySummaries ?? {
-                            questionsSummary: 'Summary unavailable (AI service not responding)',
-                            feedbackSummary: 'Summary unavailable (AI service not responding)',
-                            generalSummary: 'Summary unavailable (AI service not responding)',
+                            questionsSummary: summaryFallback,
+                            feedbackSummary: summaryFallback,
+                            generalSummary: summaryFallback,
                         }),
                     };
                 } else {

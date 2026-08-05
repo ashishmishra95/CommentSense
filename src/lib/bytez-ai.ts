@@ -364,17 +364,21 @@ export async function generateCategorySummaries(
     generalSummary: string;
     [key: string]: string;
 }> {
-    // Run these one at a time rather than with Promise.all. Firing all three at once was enough
-    // to trip the provider's rate limiter, which made every category fail together -- the
-    // "Summary unavailable" across the whole Insights panel.
     const summarizeCategory = async (items: string[], emptyMessage: string) => {
         if (items.length === 0) return emptyMessage;
         return summarizeText(items.slice(0, 20).join('\n\n'));
     };
 
-    const questionsSummary = await summarizeCategory(questions, 'No questions found');
-    const feedbackSummary = await summarizeCategory(feedback, 'No feedback found');
-    const generalSummary = await summarizeCategory(general, 'No general comments found');
+    // Three concurrent requests. These ran sequentially while categorization issued one request
+    // per comment and the rate limiter was easy to trip; batching dropped a whole run to a couple
+    // of dozen requests, so three at once is no longer a risk. Sequentially they took ~27s
+    // locally and longer from the deployment, which was enough to blow the caller's budget and
+    // lose all three summaries; concurrently they cost about as much as the slowest one.
+    const [questionsSummary, feedbackSummary, generalSummary] = await Promise.all([
+        summarizeCategory(questions, 'No questions found'),
+        summarizeCategory(feedback, 'No feedback found'),
+        summarizeCategory(general, 'No general comments found'),
+    ]);
 
     return {
         questionsSummary,

@@ -65,8 +65,22 @@ function DashboardContent() {
     const [aiProcessing, setAiProcessing] = useState(false);
     const [aiProgress, setAiProgress] = useState(0);
     const [aiMessage, setAiMessage] = useState('');
+    const [elapsedSeconds, setElapsedSeconds] = useState(0);
     const eventSourceRef = useRef<EventSource | null>(null);
     const [activeFilter, setActiveFilter] = useState<'all' | 'question' | 'feedback' | 'general'>('all');
+
+    // Some networks buffer streaming responses, holding every progress event until the request
+    // finishes. When that happens the counters legitimately have nothing to show, and a frozen
+    // "0 / ..." reads as a hang. Elapsed time proves the request is still alive.
+    useEffect(() => {
+        if (!loading) return;
+        setElapsedSeconds(0);
+        const started = Date.now();
+        const timer = setInterval(() => {
+            setElapsedSeconds(Math.floor((Date.now() - started) / 1000));
+        }, 1000);
+        return () => clearInterval(timer);
+    }, [loading]);
 
     useEffect(() => {
         // Redirect to home if not authenticated
@@ -264,6 +278,10 @@ function DashboardContent() {
         const currentProgress = aiProcessing ? aiProgress : progressPercentage;
         const currentMessage = aiProcessing ? aiMessage : fetchStatus;
 
+        // Whether any real progress has reached us yet. Networks that buffer streaming responses
+        // deliver nothing until the request completes, so this stays false for the whole run.
+        const hasProgress = fetchProgress > 0 || totalComments > 0 || aiProgress > 0;
+
         return (
             <div className="flex flex-col items-center justify-center min-h-screen bg-background">
                 <div className="flex flex-col items-center space-y-8 max-w-md w-full px-4">
@@ -280,7 +298,13 @@ function DashboardContent() {
 
                         {/* Counter Display */}
                         <div className="flex flex-col items-center justify-center gap-1">
-                            {aiProcessing ? (
+                            {!hasProgress ? (
+                                // No progress event has arrived yet. Showing "0 / ..." at "0.0%"
+                                // here makes a healthy request look stalled, so show elapsed time.
+                                <div className="text-2xl font-semibold tracking-tight text-foreground/70">
+                                    {elapsedSeconds}s elapsed
+                                </div>
+                            ) : aiProcessing ? (
                                 <div className="flex items-baseline justify-center gap-2 text-4xl font-bold tracking-tight text-foreground/80">
                                     <span>{aiProgress > 0 ? Math.floor((aiProgress / 100) * totalComments).toLocaleString() : '...'}</span>
                                     <span className="text-2xl text-muted-foreground font-normal">/ {totalComments > 0 ? totalComments.toLocaleString() : '...'}</span>
@@ -295,7 +319,9 @@ function DashboardContent() {
 
                         {/* Percentage with Status */}
                         <p className="text-sm text-muted-foreground">
-                            {currentProgress.toFixed(1)}% | {fetchStatus}
+                            {hasProgress
+                                ? `${currentProgress.toFixed(1)}% | ${fetchStatus}`
+                                : 'This can take a minute on large videos'}
                         </p>
                     </div>
 
