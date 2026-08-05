@@ -224,7 +224,30 @@ function DashboardContent() {
                     // fixed worker pool cannot express any other way. Accepting the rule-based
                     // answer immediately instead lost 86% of AI labels on a 14k-comment run.
                     for (let attempt = 0; ; attempt++) {
-                        const result = await postChunk(chunk, aiStillWorking);
+                        let result;
+                        try {
+                            result = await postChunk(chunk, aiStillWorking);
+                        } catch (err) {
+                            if (abort.signal.aborted) return;
+
+                            // One failed request must not sink the whole analysis. Over hundreds
+                            // of chunks and several minutes a transient failure is expected, and
+                            // throwing here discarded every comment already classified.
+                            if (attempt < AI_CHUNK_RETRIES) {
+                                await new Promise(r => setTimeout(r, 5000 * Math.pow(2, attempt)));
+                                continue;
+                            }
+
+                            // Rule-based needs no model call, so it is the reliable last resort.
+                            try {
+                                result = await postChunk(chunk, false);
+                            } catch {
+                                // Leave these unset; they fall back to 'general' when assembled.
+                                ruleLabeledChunks++;
+                                break;
+                            }
+                        }
+
                         result.categories.forEach((category: any, offset: number) => {
                             categories[start + offset] = category;
                         });
