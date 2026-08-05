@@ -196,7 +196,11 @@ export async function GET(request: Request) {
                     // function's own time limit -- which kills the request before any result is
                     // sent and leaves the client waiting forever. If the budget is blown we fall
                     // back to rule-based categorization, which always returns.
-                    const AI_BUDGET_MS = 120000;
+                    // Sized against a measured worst case: 1000 sampled comments took ~90s locally,
+                    // and runs from the deployment are slower still, so 120s cut real work short.
+                    // Fetching is capped at ~20s and summaries at 60s, leaving room inside the
+                    // route's 300s maxDuration.
+                    const AI_BUDGET_MS = 180000;
                     const budgetExpired = Symbol('ai-budget-expired');
                     let budgetTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -205,10 +209,12 @@ export async function GET(request: Request) {
                             commentsToProcess.map(c => c.textOriginal),
                             {
                                 // Each batch is now a single AI request covering every comment in
-                                // it, so these two numbers bound requests-in-flight at 5 rather
+                                // it, so these two numbers bound requests-in-flight at 8 rather
                                 // than the 50 that used to trip the provider's rate limiter.
+                                // 5 left the run serialised enough to blow the budget on large
+                                // videos; 8 keeps concurrency well under what triggered 429s.
                                 batchSize: CATEGORIZE_BATCH_SIZE,
-                                maxParallelBatches: 5,
+                                maxParallelBatches: 8,
                                 initialDelayMs: 100,
                                 maxRetries: 1,
                                 onProgress: (progress, processed, total) => {
