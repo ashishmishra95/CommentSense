@@ -182,9 +182,14 @@ function DashboardContent() {
                 const categories: Array<'question' | 'feedback' | 'general'> = new Array(comments.length);
                 let usedAI = false;
                 let done = 0;
-                // Once a chunk comes back without AI, stop asking for it on the rest. Otherwise an
-                // unresponsive provider costs its timeout on every remaining chunk.
                 let aiStillWorking = useAI;
+                // A large video is hundreds of chunks, and the provider rejects the occasional one
+                // under load. Giving up on AI after a single miss -- as this used to -- silently
+                // rule-classified almost everything: a 14k run finished in 28s at a rate the model
+                // cannot reach, with 80% of comments landing in "general". Only a sustained run of
+                // failures means the service is actually down.
+                const AI_FAILURE_TOLERANCE = 8;
+                let consecutiveAiFailures = 0;
 
                 const chunkStarts: number[] = [];
                 for (let i = 0; i < comments.length; i += CATEGORIZE_CHUNK) chunkStarts.push(i);
@@ -209,9 +214,16 @@ function DashboardContent() {
 
                     if (result.usedAI) {
                         usedAI = true;
+                        consecutiveAiFailures = 0;
                     } else if (aiStillWorking) {
-                        console.warn('AI categorization unavailable; continuing with rule-based');
-                        aiStillWorking = false;
+                        consecutiveAiFailures++;
+                        if (consecutiveAiFailures >= AI_FAILURE_TOLERANCE) {
+                            console.warn(
+                                `AI categorization failed ${consecutiveAiFailures} times in a row; ` +
+                                'continuing with rule-based classification'
+                            );
+                            aiStillWorking = false;
+                        }
                     }
 
                     done += chunk.length;
