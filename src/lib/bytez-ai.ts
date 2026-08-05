@@ -227,12 +227,15 @@ function parseCategory(value: string): 'question' | 'feedback' | 'general' | nul
  *
  * Always returns exactly `comments.length` categories: any comment the model skips or labels
  * unrecognizably falls back to the rule-based classifier, so callers can rely on index alignment.
+ *
+ * `usedAI` reports whether the model actually answered. Callers processing many chunks use it to
+ * stop attempting AI once it has failed, rather than paying the timeout again on every chunk.
  */
 export async function categorizeCommentsBatch(
     comments: string[]
-): Promise<Array<'question' | 'feedback' | 'general'>> {
-    if (comments.length === 0) return [];
-    if (!isConfigured()) return comments.map(fallbackCategorize);
+): Promise<{ categories: Array<'question' | 'feedback' | 'general'>; usedAI: boolean }> {
+    if (comments.length === 0) return { categories: [], usedAI: false };
+    if (!isConfigured()) return { categories: comments.map(fallbackCategorize), usedAI: false };
 
     // Keep each comment on a single line so the numbered list stays parseable, and truncate so a
     // few very long comments cannot push the batch past the model's context window.
@@ -267,10 +270,13 @@ Reply with one line per comment in the form "<number>: <category>", using the sa
             if (category) parsed.set(Number(match[1]), category);
         }
 
-        return comments.map((text, i) => parsed.get(i + 1) ?? fallbackCategorize(text));
+        return {
+            categories: comments.map((text, i) => parsed.get(i + 1) ?? fallbackCategorize(text)),
+            usedAI: true,
+        };
     } catch (error) {
         // Rate limit or transport failure: rule-based results beat losing the batch entirely.
-        return comments.map(fallbackCategorize);
+        return { categories: comments.map(fallbackCategorize), usedAI: false };
     }
 }
 

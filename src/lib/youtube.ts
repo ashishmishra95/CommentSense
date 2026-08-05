@@ -13,6 +13,82 @@ export interface YouTubeComment {
   updatedAt: string;
 }
 
+function mapCommentThread(item: any): YouTubeComment {
+  const snippet = item.snippet.topLevelComment.snippet;
+  return {
+    id: item.id,
+    textDisplay: snippet.textDisplay,
+    textOriginal: snippet.textOriginal,
+    authorDisplayName: snippet.authorDisplayName,
+    authorProfileImageUrl: snippet.authorProfileImageUrl,
+    likeCount: snippet.likeCount,
+    publishedAt: snippet.publishedAt,
+    updatedAt: snippet.updatedAt,
+  };
+}
+
+/**
+ * Fetch a single page of comments.
+ *
+ * Exists so the client can drive paging itself and update its counter after each page. Streaming
+ * the count from the server does not survive networks that buffer responses -- an intercepting
+ * proxy holds the whole body until the request ends, so progress events all arrive at once, after
+ * they stop being useful. A sequence of short requests has no such failure mode.
+ */
+export async function fetchCommentsPage(
+  videoId: string,
+  pageToken?: string
+): Promise<{ comments: YouTubeComment[]; nextPageToken?: string }> {
+  const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
+  if (!YOUTUBE_API_KEY) {
+    throw new Error('YOUTUBE_API_KEY is not defined');
+  }
+
+  try {
+    const response: any = await axios.get(`${YOUTUBE_API_URL}/commentThreads`, {
+      params: {
+        part: 'snippet',
+        videoId,
+        maxResults: 100, // YouTube API max per request
+        key: YOUTUBE_API_KEY,
+        textFormat: 'plainText',
+        pageToken,
+      },
+      timeout: 10000,
+    });
+
+    return {
+      comments: response.data.items.map(mapCommentThread),
+      nextPageToken: response.data.nextPageToken,
+    };
+  } catch (error: any) {
+    console.error('Error fetching YouTube comments page:', error);
+    if (axios.isAxiosError(error)) {
+      const apiMessage = error.response?.data?.error?.message || error.message;
+      throw new Error(`YouTube API Error: ${apiMessage}`);
+    }
+    throw error;
+  }
+}
+
+/** Total comment count reported by YouTube for a video (includes replies). */
+export async function fetchVideoCommentCount(videoId: string): Promise<number> {
+  const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
+  if (!YOUTUBE_API_KEY) return 0;
+
+  try {
+    const response = await fetch(
+      `${YOUTUBE_API_URL}/videos?part=statistics&id=${videoId}&key=${YOUTUBE_API_KEY}`,
+      { signal: AbortSignal.timeout(5000) }
+    );
+    const data = await response.json();
+    return parseInt(data?.items?.[0]?.statistics?.commentCount || '0', 10) || 0;
+  } catch (error) {
+    console.error('Error fetching video stats:', error);
+    return 0;
+  }
+}
+
 export async function fetchComments(videoId: string, maxResults: number = 100): Promise<YouTubeComment[]> {
   const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
   if (!YOUTUBE_API_KEY) {

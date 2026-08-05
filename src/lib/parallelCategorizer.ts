@@ -91,7 +91,7 @@ async function processBatchWithRetry(
         try {
             // One request for the whole batch. Previously this fanned out to one request per
             // comment, so a single batch of 10 cost 10 calls against the provider's rate limit.
-            return await categorizeCommentsBatch(comments);
+            return (await categorizeCommentsBatch(comments)).categories;
         } catch (error) {
             lastError = error as Error;
             console.warn(`Batch processing attempt ${attempt + 1} failed:`, error);

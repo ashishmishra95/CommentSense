@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState, useRef } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useSession, signOut } from 'next-auth/react';
 import axios from 'axios';
@@ -39,7 +39,24 @@ interface DashboardData {
     };
     comments: any[];
     summaries?: Summaries;
+    /** True when the video has more comments than a single run analyzes. */
+    sampled?: boolean;
+    /** YouTube's own comment count, which includes replies. */
+    availableTotal?: number;
+    /** False when categories came from the rule-based classifier rather than the model. */
+    usedAI?: boolean;
 }
+
+/**
+ * Comments analyzed per run.
+ *
+ * Fetching is unbounded at the API level, but a popular video has millions of comments and no
+ * single run can process them; capping keeps every analysis finishing in a predictable time.
+ */
+const FETCH_LIMIT = 5000;
+
+/** Comments sent per categorize request. Must not exceed the route's own CHUNK_SIZE. */
+const CATEGORIZE_CHUNK = 200;
 
 export default function DashboardPage() {
     return (
@@ -66,7 +83,6 @@ function DashboardContent() {
     const [aiProgress, setAiProgress] = useState(0);
     const [aiMessage, setAiMessage] = useState('');
     const [elapsedSeconds, setElapsedSeconds] = useState(0);
-    const eventSourceRef = useRef<EventSource | null>(null);
     const [activeFilter, setActiveFilter] = useState<'all' | 'question' | 'feedback' | 'general'>('all');
 
     // Some networks buffer streaming responses, holding every progress event until the request
@@ -91,111 +107,170 @@ function DashboardContent() {
 
         if (!url || status === 'loading') return;
 
-        // The server can be killed mid-stream when it exceeds its function time limit. That ends
-        // the connection without a 'complete' or 'error' event, so track completion explicitly
-        // and keep a watchdog running -- otherwise the spinner never stops.
-        let completed = false;
-        let watchdog: ReturnType<typeof setTimeout> | undefined;
-
-        const finish = () => {
-            completed = true;
-            if (watchdog) clearTimeout(watchdog);
-            if (eventSourceRef.current) {
-                eventSourceRef.current.close();
-                eventSourceRef.current = null;
-            }
-        };
+        // Abandoned when the user navigates away mid-run, so a cancelled analysis stops issuing
+        // requests instead of running to completion in the background.
+        const abort = new AbortController();
 
         const fetchData = async () => {
             try {
                 setLoading(true);
                 setFetchProgress(0);
+                setTotalComments(0);
+                setAiProcessing(false);
+                setAiProgress(0);
 
-                // Use EventSource for streaming progress
-                const eventSource = new EventSource(`/api/analyze-stream?url=${encodeURIComponent(url)}&useAI=${useAI}`);
-                eventSourceRef.current = eventSource;
+                // 1. Fetch comments one page at a time.
+                //
+                // The counter updates after every page because each page is its own request. The
+                // streaming endpoint reported the same numbers, but a network that buffers
+                // responses holds them all until the request ends, so the count sat at zero for
+                // the entire run. Short requests cannot be buffered into uselessness.
+                const collected: any[] = [];
+                let pageToken: string | undefined = undefined;
+                let availableTotal = 0;
 
-                // Slightly beyond the server's 300s maxDuration, so this only ever fires when the
-                // server has already given up.
-                watchdog = setTimeout(() => {
-                    if (completed) return;
-                    setError('Analysis timed out. Try a video with fewer comments.');
-                    setLoading(false);
-                    setAiProcessing(false);
-                    finish();
-                }, 320000);
+                setFetchStatus('Fetching comments');
 
-                eventSource.onmessage = (event) => {
-                    const progress = JSON.parse(event.data);
+                do {
+                    const params = new URLSearchParams({ url });
+                    if (pageToken) params.set('pageToken', pageToken);
+                    if (collected.length === 0) params.set('includeTotal', 'true');
 
-                    if (progress.type === 'progress') {
-                        setFetchProgress(progress.fetched);
-                        if (progress.total) {
-                            setTotalComments(progress.total);
-                        }
-                        if (progress.status) {
-                            setFetchStatus(progress.status);
-                        }
-                    } else if (progress.type === 'status') {
-                        if (progress.status) {
-                            setFetchStatus(progress.status);
-                        }
-                    } else if (progress.type === 'ai-processing') {
-                        setAiProcessing(true);
-                        setAiMessage(progress.message);
-                        if (progress.status) {
-                            setFetchStatus(progress.status);
-                        }
-                    } else if (progress.type === 'ai-progress') {
-                        setAiProgress(progress.progress);
-                        setAiMessage(progress.message);
-                    } else if (progress.type === 'complete') {
-                        setData(progress);
-                        setLoading(false);
-                        setAiProcessing(false);
-                        finish();
-                    } else if (progress.type === 'error') {
-                        setError(progress.error || 'Failed to fetch comments');
-                        setLoading(false);
-                        setAiProcessing(false);
-                        finish();
+                    const res = await fetch(`/api/comments?${params}`, { signal: abort.signal });
+                    if (!res.ok) {
+                        const body = await res.json().catch(() => ({}));
+                        throw new Error(body.error || 'Failed to fetch comments');
                     }
+
+                    const page = await res.json();
+                    collected.push(...page.comments);
+
+                    if (page.availableTotal) {
+                        availableTotal = page.availableTotal;
+                        // YouTube's count includes replies while we fetch top-level threads, so
+                        // showing it raw would leave the counter stuck short of its target.
+                        setTotalComments(Math.min(availableTotal, FETCH_LIMIT));
+                    }
+                    setFetchProgress(collected.length);
+
+                    pageToken = page.nextPageToken ?? undefined;
+                } while (pageToken && collected.length < FETCH_LIMIT);
+
+                const comments = collected.slice(0, FETCH_LIMIT);
+                setTotalComments(comments.length);
+                setFetchProgress(comments.length);
+
+                // 2. Categorize in chunks, reporting progress across them.
+                setAiProcessing(true);
+                setFetchStatus('Categorizing comments');
+
+                const categories: Array<'question' | 'feedback' | 'general'> = [];
+                let usedAI = false;
+                // Once a chunk comes back without AI, stop asking for it on the rest. Otherwise an
+                // unresponsive provider costs its timeout on every remaining chunk.
+                let aiStillWorking = useAI;
+
+                for (let i = 0; i < comments.length; i += CATEGORIZE_CHUNK) {
+                    const chunk = comments.slice(i, i + CATEGORIZE_CHUNK);
+                    setAiMessage(`Categorizing ${i.toLocaleString()}/${comments.length.toLocaleString()} comments`);
+
+                    const res = await fetch('/api/categorize', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            texts: chunk.map(c => c.textOriginal),
+                            useAI: aiStillWorking,
+                        }),
+                        signal: abort.signal,
+                    });
+                    if (!res.ok) throw new Error('Failed to categorize comments');
+
+                    const result = await res.json();
+                    categories.push(...result.categories);
+                    if (result.usedAI) {
+                        usedAI = true;
+                    } else if (aiStillWorking) {
+                        console.warn('AI categorization unavailable; continuing with rule-based');
+                        aiStillWorking = false;
+                    }
+
+                    setAiProgress(Math.round((categories.length / comments.length) * 100));
+                }
+
+                const categorizedComments = comments.map((comment, i) => ({
+                    ...comment,
+                    category: categories[i] ?? 'general',
+                }));
+
+                const stats = {
+                    total: categorizedComments.length,
+                    questions: categorizedComments.filter(c => c.category === 'question').length,
+                    feedback: categorizedComments.filter(c => c.category === 'feedback').length,
+                    general: categorizedComments.filter(c => c.category === 'general').length,
                 };
 
-                eventSource.onerror = () => {
-                    // Already finished cleanly -- the browser fires onerror when the server closes
-                    // a completed stream, which is not a failure.
-                    if (completed) return;
+                // 3. Summarize. Failure here still leaves categorized comments worth showing.
+                setFetchStatus('Generating summaries');
+                setAiMessage('Generating AI summaries...');
 
-                    // close() here also stops EventSource from silently reconnecting and
-                    // restarting the whole analysis.
-                    setError(
-                        'Analysis stopped before it finished. This usually means the video has too ' +
-                        'many comments to process in one run. Please try again.'
-                    );
-                    setLoading(false);
-                    setAiProcessing(false);
-                    finish();
-                };
+                let summaries = undefined;
+                if (useAI && !usedAI) {
+                    // Categorization already proved the model is not answering. Skip the request
+                    // and say so, rather than spending another timeout to reach the same place.
+                    const unavailable = 'Summary unavailable (AI service not responding)';
+                    summaries = {
+                        questionsSummary: unavailable,
+                        feedbackSummary: unavailable,
+                        generalSummary: unavailable,
+                    };
+                } else if (useAI) {
+                    const byCategory = (category: string) => categorizedComments
+                        .filter(c => c.category === category)
+                        .map(c => c.textOriginal);
 
-            } catch (err) {
-                setError('Failed to fetch comments. Please check the URL and try again.');
-                console.error(err);
+                    try {
+                        const res = await fetch('/api/summarize', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                questions: byCategory('question'),
+                                feedback: byCategory('feedback'),
+                                general: byCategory('general'),
+                            }),
+                            signal: abort.signal,
+                        });
+                        if (res.ok) summaries = (await res.json()).summaries;
+                    } catch (err) {
+                        if (abort.signal.aborted) return;
+                        console.error('Summary request failed:', err);
+                    }
+                }
+
+                setData({
+                    videoId: comments[0]?.id ? url : url,
+                    stats,
+                    comments: categorizedComments,
+                    summaries,
+                    sampled: availableTotal > comments.length,
+                    availableTotal,
+                    usedAI,
+                });
                 setLoading(false);
-                finish();
+                setAiProcessing(false);
+            } catch (err) {
+                // Navigating away aborts in-flight requests; that is not an error worth showing.
+                if (abort.signal.aborted) return;
+
+                console.error(err);
+                setError(err instanceof Error ? err.message : 'Failed to fetch comments. Please check the URL and try again.');
+                setLoading(false);
+                setAiProcessing(false);
             }
         };
 
         fetchData();
 
-        // Cleanup function to close EventSource and cancel the watchdog on unmount
-        return () => {
-            if (watchdog) clearTimeout(watchdog);
-            if (eventSourceRef.current) {
-                eventSourceRef.current.close();
-                eventSourceRef.current = null;
-            }
-        };
+        return () => abort.abort();
     }, [url, status, router, useAI]);
 
     const handleExport = () => {
@@ -252,12 +327,8 @@ function DashboardContent() {
     };
 
     const handleCancel = () => {
-        // Close the EventSource connection
-        if (eventSourceRef.current) {
-            eventSourceRef.current.close();
-            eventSourceRef.current = null;
-        }
-        // Navigate back to home
+        // Navigating away unmounts this component, and the effect cleanup aborts every in-flight
+        // request, so there is nothing to tear down here.
         router.push('/');
     };
 
